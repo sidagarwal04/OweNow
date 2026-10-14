@@ -1,4 +1,4 @@
-import { adminClient, authUser, json } from './_shared.js';
+import { authUser, isGroupMember, json } from './_shared.js';
 
 // POST /api/simplify-debts
 // Body: { groupId: string }
@@ -9,32 +9,16 @@ export const handler = async (event) => {
   }
 
   try {
-    const { user, admin } = await authUser(event);
+    const { user, state } = await authUser(event);
     const { groupId } = JSON.parse(event.body || '{}');
     if (!groupId) return json(400, { error: 'groupId required' });
 
-    // Ensure caller is a group member
-    const { data: member, error: memErr } = await admin
-      .from('group_members')
-      .select('id')
-      .eq('group_id', groupId)
-      .eq('user_id', user.id)
-      .maybeSingle();
-    if (memErr) throw memErr;
-    if (!member) return json(403, { error: 'Not a member of this group' });
+    if (!isGroupMember(state, groupId, user.id)) {
+      return json(403, { error: 'Not a member of this group' });
+    }
 
-    const [{ data: expenses, error: eErr }, { data: settlements, error: sErr }] = await Promise.all([
-      admin
-        .from('expenses')
-        .select('id, paid_by, amount, expense_splits ( user_id, amount )')
-        .eq('group_id', groupId),
-      admin
-        .from('settlements')
-        .select('from_user_id, to_user_id, amount')
-        .eq('group_id', groupId),
-    ]);
-    if (eErr) throw eErr;
-    if (sErr) throw sErr;
+    const expenses = Object.values(state.expenses).filter((e) => e.group_id === groupId);
+    const settlements = Object.values(state.settlements).filter((s) => s.group_id === groupId);
 
     const balances = {};
     const bump = (uid, delta) => {
@@ -42,11 +26,11 @@ export const handler = async (event) => {
       balances[uid] = (balances[uid] ?? 0) + delta;
     };
 
-    for (const e of expenses ?? []) {
+    for (const e of expenses) {
       bump(e.paid_by, Number(e.amount) || 0);
       for (const s of e.expense_splits ?? []) bump(s.user_id, -Number(s.amount || 0));
     }
-    for (const s of settlements ?? []) {
+    for (const s of settlements) {
       bump(s.from_user_id, Number(s.amount) || 0);
       bump(s.to_user_id, -Number(s.amount) || 0);
     }

@@ -2,16 +2,16 @@
 
 A modern Splitwise clone — split expenses with friends, without the friction.
 
-Built with **React 18 + Vite + Tailwind + Framer Motion** on the front, **Supabase** for auth/db/storage/realtime, and **Netlify Functions** for the bits Supabase shouldn't do.
+Built with **React 18 + Vite + Tailwind + Framer Motion** on the front, **Google OAuth** for sign-in, and **Netlify Blobs + Netlify Functions** (with local `.data/` fallback in dev) for zero-config cloud persistence — the exact same architecture as [Meridian](https://meridian.meetsid.dev/).
 
 ---
 
 ## Stack
 
 - **Frontend** — React 18, Vite, Tailwind CSS, Framer Motion, React Router, React Query, Lucide icons
-- **Backend** — Supabase (Postgres + Auth + Realtime + Storage)
-- **Functions** — Netlify Functions (Node, ESM, esbuild)
-- **Auth** — Supabase Auth + Google OAuth (PKCE)
+- **Storage** — `@netlify/blobs` (`owenow-store` in production on Netlify, `.data/cloud-store.json` local fallback on localhost)
+- **Functions** — Netlify Functions (Node, ESM, esbuild) + built-in Vite `/api/*` dev middleware
+- **Auth** — Direct Google OAuth 2.0 + HMAC-SHA256 JWT sessions (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `NEXTAUTH_SECRET`)
 - **Fonts** — Cabinet Grotesk (headings) + Outfit (body) via Fontshare
 
 ---
@@ -25,44 +25,41 @@ npm install
 cp .env.example .env
 ```
 
-Fill in the values in `.env`:
+Configure `.env`:
 
-- `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` — from Supabase dashboard → Settings → API
-- `SUPABASE_SERVICE_ROLE_KEY` — same place (server-only, never expose to the client)
-- `RESEND_API_KEY` — for sending invite emails (optional in dev)
-- `EXCHANGE_RATE_API_KEY` — optional; falls back to free `exchangerate.host`
+```ini
+NEXTAUTH_URL=http://localhost:5173
+NEXTAUTH_SECRET=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 
-### 2. Bootstrap Supabase
+# Optional: connect localhost directly to your live production Netlify Blobs store
+NETLIFY_SITE_ID=
+NETLIFY_AUTH_TOKEN=
+```
 
-1. Create a project at <https://supabase.com>.
-2. Go to **SQL Editor** and paste the contents of [`supabase/schema.sql`](./supabase/schema.sql).
-3. Go to **Authentication → Providers → Google** and enable it. Add your OAuth client ID/secret (set up at <https://console.cloud.google.com>). Add the **redirect URL** Supabase displays to your Google OAuth allowed redirects.
-4. **Authentication → URL Configuration** — add your local URL (`http://localhost:8888`) and your production URL to **Site URL** and **Redirect URLs**.
-5. **Database → Webhooks** — create two webhooks pointing at `https://<your-site>/.netlify/functions/notification-webhook`:
-   - `expenses` → INSERT
-   - `settlements` → INSERT
-   - Optionally set an `x-webhook-secret` header and put the same value in your Netlify env as `SUPABASE_WEBHOOK_SECRET`.
+1. **Google OAuth (`NEXTAUTH_*` & `GOOGLE_*`)**:
+   - `NEXTAUTH_SECRET` can be any random string (e.g. `openssl rand -base64 32`).
+   - In the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an OAuth 2.0 Client ID of type **Web application** and add `http://localhost:5173/api/auth/callback/google` (and your production URL `https://<your-domain>/api/auth/callback/google`) to **Authorized redirect URIs**.
+2. **Cross-Device Storage (`@netlify/blobs`)**:
+   - **On Netlify (Production)**: Zero configuration is required. Netlify automatically provisions and injects the `owenow-store` Netlify Blobs context at runtime.
+   - **On Localhost**: By default, if `NETLIFY_SITE_ID` and `NETLIFY_AUTH_TOKEN` are left blank, the dev server stores all groups, expenses, settlements, and notifications in a local `.data/cloud-store.json` fallback file. If you want `localhost:5173` to sync directly with your live production Netlify Blobs store, add `NETLIFY_SITE_ID` and `NETLIFY_AUTH_TOKEN` to `.env`.
 
-### 3. Develop
+### 2. Develop
 
 ```bash
-# Run frontend (Vite) + Netlify Functions together:
-npx netlify dev
-
-# Or front-end only (no /api/* routes):
 npm run dev
 ```
 
-Frontend boots at `http://localhost:5173` (or `http://localhost:8888` under `netlify dev`).
+Open [http://localhost:5173](http://localhost:5173) (both frontend and `/api/*` endpoints work directly under `npm run dev`, or you can run `npx netlify dev` on port `8888`).
 
-### 4. Deploy
+### 3. Deploy
 
-The repo is wired up for one-click Netlify deploys.
+The repo is wired up for one-click Netlify deploys:
 
-1. Push to GitHub.
-2. Connect the repo to Netlify.
-3. Set the same env vars from `.env.example` in **Netlify → Site settings → Environment variables**.
-4. Push to `main` — Netlify auto-builds (`npm run build`) and serves `dist/` + functions from `netlify/functions/`.
+1. Push to GitHub and connect the repo to Netlify.
+2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `NEXTAUTH_SECRET` in **Netlify → Site settings → Environment variables** (Netlify Blobs requires zero env vars in production).
+3. Push to `main` — Netlify auto-builds (`npm run build`) and serves `dist/` + functions from `netlify/functions/`.
 
 ---
 
@@ -72,72 +69,25 @@ The repo is wired up for one-click Netlify deploys.
 /
 ├── netlify/
 │   └── functions/
-│       ├── _shared.js                 # auth + supabase admin helpers
-│       ├── simplify-debts.js          # POST /api/simplify-debts
-│       ├── invite.js                  # POST /api/invite
-│       ├── convert.js                 # GET  /api/convert
-│       └── notification-webhook.js    # Supabase DB webhook → notifications
-├── supabase/
-│   └── schema.sql                     # full schema + RLS + storage + triggers
+│       ├── _shared.js          # Netlify Blobs + .data/ fallback store & JWT auth helpers
+│       ├── auth.js             # Google OAuth 2.0 (/api/auth/*) + profile updates
+│       ├── groups.js           # GET / POST / DELETE /api/groups
+│       ├── expenses.js         # GET / POST / PUT / DELETE /api/expenses
+│       ├── settlements.js      # GET / POST /api/settlements
+│       ├── notifications.js    # GET / PATCH /api/notifications
+│       ├── receipts.js         # GET / POST /api/receipts
+│       ├── simplify-debts.js   # POST /api/simplify-debts
+│       ├── invite.js           # POST /api/invite
+│       └── convert.js          # GET  /api/convert
 ├── src/
-│   ├── components/                    # UI building blocks
-│   ├── pages/                         # route components
-│   ├── hooks/                         # React Query hooks (Supabase data)
-│   ├── lib/                           # supabase client, queryClient, auth context
-│   └── utils/                         # debt simplifier, currency, formatters
-├── netlify.toml                       # build + redirects + functions config
+│   ├── components/             # UI building blocks
+│   ├── pages/                  # route components
+│   ├── hooks/                  # React Query hooks
+│   ├── lib/                    # API client, queryClient, auth context
+│   └── utils/                  # debt simplifier, currency, formatters
+├── netlify.toml                # build + redirects + functions config
 └── package.json
 ```
-
----
-
-## How the pieces fit together
-
-### Auth
-- `supabase.auth.signInWithOAuth({ provider: 'google' })` triggers the Google flow.
-- Supabase auto-creates a row in `auth.users`; the `handle_new_user` trigger mirrors it into `public.profiles`.
-- The `AuthProvider` keeps the session in React context and re-loads the profile on auth state changes.
-
-### Data
-- All queries flow through **React Query**, keyed by entity + IDs, with sensible invalidations on every mutation.
-- **RLS** ensures users only see groups they're a member of — even if the client tried to query otherwise.
-- **Realtime** subscriptions on `expenses`, `expense_splits`, `settlements`, and `notifications` keep two clients in sync instantly.
-
-### Debt simplification
-- A local greedy algorithm in `src/utils/debtSimplifier.js` runs on every group page for instant feedback.
-- A Netlify Function (`/api/simplify-debts`) does the same thing server-side (verifies the caller is a group member) — useful if you ever want to lock the computation behind the service role.
-
-### Storage
-- The `receipts` bucket is private.
-- Uploads are scoped to `userId/...` paths and RLS enforces this both ways.
-- Display URLs are signed for 30 minutes via `useReceiptUrl`.
-
-### Notifications
-- Generated by the `notification-webhook` Netlify Function, which Supabase Database Webhooks call on every `INSERT` to `expenses` and `settlements`.
-- Inserted via the service-role client (RLS bypass), then surfaced to the user via the realtime subscription on `notifications`.
-
----
-
-## Tweak the look
-
-Theme tokens live in [`tailwind.config.js`](./tailwind.config.js). The big ones:
-
-- `bg.DEFAULT` — page background (deep navy)
-- `accent.DEFAULT` — primary teal-emerald
-- `secondary.DEFAULT` — indigo
-- `font.display` — Cabinet Grotesk
-- `font.sans` — Outfit
-
-Component classes (`.card`, `.btn-primary`, `.input` …) live in [`src/index.css`](./src/index.css).
-
----
-
-## Roadmap
-
-- [ ] Per-currency expenses with on-the-fly conversion via `/api/convert`
-- [ ] Recurring expenses
-- [ ] Group archiving
-- [ ] Push notifications via web push
 
 ---
 

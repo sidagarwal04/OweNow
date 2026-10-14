@@ -4,14 +4,13 @@ import { LogOut, Save } from 'lucide-react';
 import PageTransition from '../components/PageTransition.jsx';
 import Avatar from '../components/Avatar.jsx';
 import { useAuth } from '../lib/auth.jsx';
-import { supabase } from '../lib/supabase.js';
 import toast from 'react-hot-toast';
 import { useOverallBalance } from '../hooks/useBalances.js';
 import { useGroups } from '../hooks/useGroups.js';
 import { formatMoney } from '../utils/formatters.js';
 
 export default function Profile() {
-  const { user, profile, signOut, refreshProfile } = useAuth();
+  const { user, profile, signOut, updateProfile } = useAuth();
   const navigate = useNavigate();
   const [name, setName] = useState(profile?.full_name || '');
   const [busy, setBusy] = useState(false);
@@ -23,12 +22,7 @@ export default function Profile() {
     e.preventDefault();
     setBusy(true);
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ full_name: name.trim() })
-        .eq('id', user.id);
-      if (error) throw error;
-      await refreshProfile();
+      await updateProfile({ full_name: name.trim() });
       toast.success('Profile updated');
     } catch (err) {
       toast.error(err.message);

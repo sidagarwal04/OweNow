@@ -1,26 +1,14 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase, RECEIPTS_BUCKET } from '../lib/supabase.js';
-import { useAuth } from '../lib/auth.jsx';
+import { apiFetch, broadcastChange, fileToDataUrl, subscribeChanges } from '../lib/api.js';
 
 export function useExpenses(groupId) {
   return useQuery({
     queryKey: ['expenses', groupId],
     enabled: !!groupId,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('expenses')
-        .select(
-          `
-          *,
-          expense_splits ( id, user_id, amount, split_type )
-        `
-        )
-        .eq('group_id', groupId)
-        .order('date', { ascending: false })
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      return data ?? [];
+      const { expenses } = await apiFetch(`/api/expenses?groupId=${encodeURIComponent(groupId)}`);
+      return expenses ?? [];
     },
   });
 }
@@ -30,13 +18,10 @@ export function useSettlements(groupId) {
     queryKey: ['settlements', groupId],
     enabled: !!groupId,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('settlements')
-        .select('*')
-        .eq('group_id', groupId)
-        .order('settled_at', { ascending: false });
-      if (error) throw error;
-      return data ?? [];
+      const { settlements } = await apiFetch(
+        `/api/settlements?groupId=${encodeURIComponent(groupId)}`
+      );
+      return settlements ?? [];
     },
   });
 }
@@ -51,27 +36,35 @@ export function useActivity(groupId) {
   ].sort((a, b) => new Date(b.at) - new Date(a.at));
 }
 
-async function uploadReceipt(file, userId) {
+async function uploadReceipt(file) {
   if (!file) return null;
-  const ext = file.name.split('.').pop();
-  const path = `${userId}/${crypto.randomUUID()}.${ext}`;
-  const { error } = await supabase.storage
-    .from(RECEIPTS_BUCKET)
-    .upload(path, file, { cacheControl: '3600', upsert: false });
-  if (error) throw error;
+  const ext = file.name?.split('.').pop() || 'jpg';
+  const dataUrl = await fileToDataUrl(file);
+  const { path } = await apiFetch('/api/receipts', {
+    method: 'POST',
+    body: { dataUrl, ext },
+  });
   return path;
 }
 
 export function useCreateExpense(groupId) {
   const qc = useQueryClient();
-  const { user } = useAuth();
   return useMutation({
-    mutationFn: async ({ title, amount, currency, paid_by, date, category, notes, splits, receipt }) => {
-      const receipt_url = await uploadReceipt(receipt, user.id);
-
-      const { data: expense, error } = await supabase
-        .from('expenses')
-        .insert({
+    mutationFn: async ({
+      title,
+      amount,
+      currency,
+      paid_by,
+      date,
+      category,
+      notes,
+      splits,
+      receipt,
+    }) => {
+      const receipt_url = await uploadReceipt(receipt);
+      const { expense } = await apiFetch('/api/expenses', {
+        method: 'POST',
+        body: {
           group_id: groupId,
           paid_by,
           title,
@@ -81,42 +74,45 @@ export function useCreateExpense(groupId) {
           date,
           notes,
           receipt_url,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-
-      const { error: splitErr } = await supabase.from('expense_splits').insert(
-        splits.map((s) => ({
-          expense_id: expense.id,
-          user_id: s.user_id,
-          amount: s.amount,
-          split_type: s.split_type,
-        }))
-      );
-      if (splitErr) throw splitErr;
-
+          splits,
+        },
+      });
       return expense;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['expenses', groupId] });
       qc.invalidateQueries({ queryKey: ['balances', groupId] });
+      qc.invalidateQueries({ queryKey: ['overall-balance'] });
       qc.invalidateQueries({ queryKey: ['groups'] });
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      qc.invalidateQueries({ queryKey: ['notifications-unread'] });
+      broadcastChange({ type: 'expenses', groupId });
     },
   });
 }
 
 export function useUpdateExpense(groupId) {
   const qc = useQueryClient();
-  const { user } = useAuth();
   return useMutation({
-    mutationFn: async ({ id, title, amount, currency, paid_by, date, category, notes, splits, receipt }) => {
+    mutationFn: async ({
+      id,
+      title,
+      amount,
+      currency,
+      paid_by,
+      date,
+      category,
+      notes,
+      splits,
+      receipt,
+    }) => {
       let receipt_url;
       if (receipt instanceof File) {
-        receipt_url = await uploadReceipt(receipt, user.id);
+        receipt_url = await uploadReceipt(receipt);
       }
 
       const updatePayload = {
+        id,
         title,
         amount,
         currency,
@@ -124,28 +120,21 @@ export function useUpdateExpense(groupId) {
         date,
         category,
         notes,
+        splits,
       };
       if (receipt_url) updatePayload.receipt_url = receipt_url;
 
-      const { error } = await supabase.from('expenses').update(updatePayload).eq('id', id);
-      if (error) throw error;
-
-      const { error: delErr } = await supabase.from('expense_splits').delete().eq('expense_id', id);
-      if (delErr) throw delErr;
-
-      const { error: insErr } = await supabase.from('expense_splits').insert(
-        splits.map((s) => ({
-          expense_id: id,
-          user_id: s.user_id,
-          amount: s.amount,
-          split_type: s.split_type,
-        }))
-      );
-      if (insErr) throw insErr;
+      const { expense } = await apiFetch('/api/expenses', {
+        method: 'PUT',
+        body: updatePayload,
+      });
+      return expense;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['expenses', groupId] });
       qc.invalidateQueries({ queryKey: ['balances', groupId] });
+      qc.invalidateQueries({ queryKey: ['overall-balance'] });
+      broadcastChange({ type: 'expenses', groupId });
     },
   });
 }
@@ -154,12 +143,15 @@ export function useDeleteExpense(groupId) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id) => {
-      const { error } = await supabase.from('expenses').delete().eq('id', id);
-      if (error) throw error;
+      await apiFetch(`/api/expenses?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['expenses', groupId] });
       qc.invalidateQueries({ queryKey: ['balances', groupId] });
+      qc.invalidateQueries({ queryKey: ['overall-balance'] });
+      broadcastChange({ type: 'expenses', groupId });
     },
   });
 }
@@ -168,47 +160,51 @@ export function useCreateSettlement(groupId) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ from_user_id, to_user_id, amount, note }) => {
-      const { data, error } = await supabase
-        .from('settlements')
-        .insert({ group_id: groupId, from_user_id, to_user_id, amount, note })
-        .select()
-        .single();
-      if (error) throw error;
-      return data;
+      const { settlement } = await apiFetch('/api/settlements', {
+        method: 'POST',
+        body: { group_id: groupId, from_user_id, to_user_id, amount, note },
+      });
+      return settlement;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['settlements', groupId] });
       qc.invalidateQueries({ queryKey: ['expenses', groupId] });
       qc.invalidateQueries({ queryKey: ['balances', groupId] });
+      qc.invalidateQueries({ queryKey: ['overall-balance'] });
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      qc.invalidateQueries({ queryKey: ['notifications-unread'] });
+      broadcastChange({ type: 'settlements', groupId });
     },
   });
 }
 
-// Subscribe to realtime changes for a group's expenses + settlements.
+// Subscribe to cross-tab & background changes for a group's expenses + settlements.
 export function useGroupRealtime(groupId) {
   const qc = useQueryClient();
   useEffect(() => {
     if (!groupId) return;
-    const channel = supabase
-      .channel(`group:${groupId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'expenses', filter: `group_id=eq.${groupId}` },
-        () => qc.invalidateQueries({ queryKey: ['expenses', groupId] })
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'expense_splits' },
-        () => qc.invalidateQueries({ queryKey: ['expenses', groupId] })
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'settlements', filter: `group_id=eq.${groupId}` },
-        () => qc.invalidateQueries({ queryKey: ['settlements', groupId] })
-      )
-      .subscribe();
+
+    const invalidate = () => {
+      qc.invalidateQueries({ queryKey: ['expenses', groupId] });
+      qc.invalidateQueries({ queryKey: ['settlements', groupId] });
+      qc.invalidateQueries({ queryKey: ['group', groupId] });
+    };
+
+    const unsubscribe = subscribeChanges((msg) => {
+      if (!msg.groupId || msg.groupId === groupId) {
+        invalidate();
+      }
+    });
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        invalidate();
+      }
+    }, 15_000);
+
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribe();
+      clearInterval(interval);
     };
   }, [groupId, qc]);
 }

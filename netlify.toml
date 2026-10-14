@@ -4,8 +4,9 @@
   functions = "netlify/functions"
 
 [build.environment]
+  NODE_VERSION = "22"
   SECRETS_SCAN_OMIT_PATHS = ".env.example,README.md"
-  SECRETS_SCAN_OMIT_KEYS  = "VITE_APP_URL"
+  SECRETS_SCAN_OMIT_KEYS  = "VITE_APP_URL,NEXTAUTH_URL"
 
 [functions]
   node_bundler = "esbuild"
@@ -16,12 +17,17 @@
   targetPort = 5173
   framework = "vite"
 
-# SPA fallback so client-side routes resolve.
+[[redirects]]
+  from = "/api/auth/*"
+  to = "/.netlify/functions/auth"
+  status = 200
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
 
+# SPA fallback so client-side routes resolve.
 [[redirects]]
   from = "/*"
   to = "/index.html"

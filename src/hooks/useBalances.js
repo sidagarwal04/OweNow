@@ -4,7 +4,7 @@ import { useExpenses, useSettlements } from './useExpenses.js';
 import { computeNetBalances, simplifyDebts } from '../utils/debtSimplifier.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useGroups } from './useGroups.js';
-import { supabase } from '../lib/supabase.js';
+import { apiFetch } from '../lib/api.js';
 
 // Per-group net balances and simplified suggested settlements.
 export function useGroupBalances(groupId) {
@@ -28,21 +28,12 @@ export function useOverallBalance() {
     enabled: !!user?.id && groups.length > 0,
     queryFn: async () => {
       const groupIds = groups.map((g) => g.id);
+      const encodedIds = encodeURIComponent(groupIds.join(','));
 
-      const [{ data: expenses = [], error: eErr }, { data: settlements = [], error: sErr }] =
-        await Promise.all([
-          supabase
-            .from('expenses')
-            .select('id, group_id, paid_by, amount, currency, expense_splits ( user_id, amount )')
-            .in('group_id', groupIds),
-          supabase
-            .from('settlements')
-            .select('group_id, from_user_id, to_user_id, amount')
-            .in('group_id', groupIds),
-        ]);
-
-      if (eErr) throw eErr;
-      if (sErr) throw sErr;
+      const [{ expenses = [] }, { settlements = [] }] = await Promise.all([
+        apiFetch(`/api/expenses?groupIds=${encodedIds}`),
+        apiFetch(`/api/settlements?groupIds=${encodedIds}`),
+      ]);
 
       const perGroup = {};
       let owed = 0;

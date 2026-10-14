@@ -1,90 +1,80 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { supabase } from './supabase.js';
+import {
+  apiFetch,
+  getCachedSession,
+  getStoredToken,
+  setCachedSession,
+  setStoredToken,
+} from './api.js';
 
 const AuthContext = createContext({
   session: null,
   user: null,
   profile: null,
+  googleReady: true,
   loading: true,
   signInWithGoogle: async () => {},
   signOut: async () => {},
   refreshProfile: async () => {},
+  updateProfile: async () => {},
 });
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const cached = getCachedSession();
+  const [session, setSession] = useState(cached?.session ?? null);
+  const [profile, setProfile] = useState(cached?.profile ?? null);
+  const [googleReady, setGoogleReady] = useState(true);
+  const [loading, setLoading] = useState(!cached?.session);
 
-  const loadProfile = async (userId) => {
-    if (!userId) return setProfile(null);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-    if (!error) setProfile(data ?? null);
+  const fetchSession = async () => {
+    try {
+      const data = await apiFetch('/api/auth/session');
+      if (typeof data.googleReady === 'boolean') {
+        setGoogleReady(data.googleReady);
+      }
+      if (data?.user && data?.session) {
+        if (data.session.access_token) {
+          setStoredToken(data.session.access_token);
+        }
+        setSession(data.session);
+        setProfile(data.profile ?? null);
+        setCachedSession({ session: data.session, profile: data.profile ?? null });
+        return data;
+      } else {
+        setStoredToken(null);
+        setCachedSession(null);
+        setSession(null);
+        setProfile(null);
+        return null;
+      }
+    } catch (e) {
+      console.error('[OweNow] fetchSession failed:', e);
+      return null;
+    }
   };
 
   useEffect(() => {
     let mounted = true;
 
-    // Drop a locally-cached session whose server-side counterpart is gone
-    // (e.g. JWT references a session_id that no longer exists). Without this,
-    // the SDK keeps reporting "signed in" while every GoTrue call 403s.
-    const validateOrClearSession = async (sess) => {
-      if (!sess) return null;
-      const { data, error } = await supabase.auth.getUser();
-      if (error || !data?.user) {
-        console.warn('[OweNow] stored session rejected by server, signing out:', error);
-        await supabase.auth.signOut().catch(() => {});
-        Object.keys(localStorage)
-          .filter((k) => k.startsWith('sb-'))
-          .forEach((k) => localStorage.removeItem(k));
-        return null;
-      }
-      return sess;
-    };
-
     (async () => {
       try {
+        // Capture ?auth_token=... returned from /api/auth/callback/google
         const url = new URL(window.location.href);
-        const code = url.searchParams.get('code');
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) console.error('[OweNow] exchangeCodeForSession error:', error);
-          url.searchParams.delete('code');
-          url.searchParams.delete('state');
+        const tokenFromUrl = url.searchParams.get('auth_token');
+        if (tokenFromUrl) {
+          setStoredToken(tokenFromUrl);
+          url.searchParams.delete('auth_token');
           window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
         }
 
-        const { data, error } = await supabase.auth.getSession();
-        if (error) console.error('[OweNow] getSession error:', error);
-        if (!mounted) return;
-        const validSession = await validateOrClearSession(data?.session ?? null);
-        if (!mounted) return;
-        setSession(validSession);
-        // Fire-and-forget — profile is metadata; don't block the loading flag on it.
-        loadProfile(validSession?.user?.id).catch((e) =>
-          console.error('[OweNow] loadProfile error:', e)
-        );
-      } catch (e) {
-        console.error('[OweNow] auth init failed:', e);
+        await fetchSession();
       } finally {
         if (mounted) setLoading(false);
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession ?? null);
-      loadProfile(newSession?.user?.id).catch((e) =>
-        console.error('[OweNow] loadProfile (onAuthStateChange) error:', e)
-      );
-    });
-
     return () => {
       mounted = false;
-      sub?.subscription?.unsubscribe();
     };
   }, []);
 
@@ -93,24 +83,49 @@ export function AuthProvider({ children }) {
       session,
       user: session?.user ?? null,
       profile,
+      googleReady,
       loading,
       signInWithGoogle: async () => {
-        const redirectTo = `${import.meta.env.VITE_APP_URL ?? window.location.origin}/`;
-        return supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: {
-            redirectTo,
-            queryParams: { prompt: 'select_account' },
-          },
-        });
+        window.location.assign('/api/auth/google');
+        return { error: null };
       },
       signOut: async () => {
-        await supabase.auth.signOut();
+        await apiFetch('/api/auth/signout', { method: 'POST' }).catch(() => {});
+        setStoredToken(null);
+        setCachedSession(null);
+        setSession(null);
         setProfile(null);
       },
-      refreshProfile: async () => loadProfile(session?.user?.id),
+      refreshProfile: async () => {
+        await fetchSession();
+      },
+      updateProfile: async (updates) => {
+        const { profile: updated } = await apiFetch('/api/auth/profile', {
+          method: 'PATCH',
+          body: updates,
+        });
+        setProfile(updated);
+        const currentToken = getStoredToken();
+        if (session) {
+          const nextSession = {
+            ...session,
+            access_token: currentToken || session.access_token,
+            user: {
+              ...session.user,
+              user_metadata: {
+                ...session.user?.user_metadata,
+                full_name: updated.full_name,
+                avatar_url: updated.avatar_url,
+              },
+            },
+          };
+          setSession(nextSession);
+          setCachedSession({ session: nextSession, profile: updated });
+        }
+        return updated;
+      },
     }),
-    [session, profile, loading]
+    [session, profile, googleReady, loading]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
