@@ -33,6 +33,31 @@ export function redirect(location, extraHeaders = {}) {
   };
 }
 
+export function resolveOrigin(event) {
+  const headers = event?.headers || {};
+  const host = headers['x-forwarded-host'] || headers.host || headers.Host;
+  if (host) {
+    const proto =
+      headers['x-forwarded-proto'] ||
+      (host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
+    return `${proto}://${host}`;
+  }
+  if (event?.rawUrl) {
+    try {
+      return new URL(event.rawUrl).origin;
+    } catch {
+      // ignore
+    }
+  }
+  return (
+    process.env.URL ||
+    process.env.DEPLOY_PRIME_URL ||
+    process.env.NEXTAUTH_URL ||
+    process.env.VITE_APP_URL ||
+    'http://localhost:5173'
+  ).replace(/\/+$/, '');
+}
+
 /**
  * Custom fetch wrapper for Netlify Blobs (same as Meridian) so missing keys on S3 signed URLs
  * (which can return 403) or slow network calls do not trigger @netlify/blobs's 5 × 5s retry loop.

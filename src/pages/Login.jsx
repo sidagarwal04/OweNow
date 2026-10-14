@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import Logo from '../components/Logo.jsx';
 
 export default function Login() {
-  const { user, googleReady, signInWithGoogle } = useAuth();
+  const { user, signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   const [searchParams] = useSearchParams();
   const authError = searchParams.get('error');
@@ -23,11 +23,6 @@ export default function Login() {
       setBusy(false);
     }
   };
-
-  const callbackUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/auth/callback/google`
-      : 'http://localhost:5173/api/auth/callback/google';
 
   return (
     <div className="min-h-screen grid place-items-center px-4 relative overflow-hidden">
@@ -50,35 +45,18 @@ export default function Login() {
         <div className="card p-7">
           <h2 className="heading text-xl text-center mb-6">Welcome back</h2>
 
-          {googleReady ? (
-            <button
-              onClick={handleGoogle}
-              disabled={busy}
-              className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-border-strong bg-white text-[#1F1F1F] font-medium hover:bg-white/90 active:scale-[0.99] transition disabled:opacity-60"
-            >
-              <GoogleIcon />
-              {busy ? 'Signing in…' : 'Continue with Google'}
-            </button>
-          ) : (
-            <div className="rounded-xl border border-border bg-bg-subtle/60 p-4 text-xs text-text-muted space-y-2">
-              <p className="text-text font-medium">
-                Google sign-in needs an OAuth client from Google Cloud. Add these to <code>.env</code>, then restart the dev server:
-              </p>
-              <ol className="list-decimal list-inside space-y-1">
-                <li>Create an OAuth client (Web application) in Google Cloud Console.</li>
-                <li>
-                  Set the authorized redirect URI to <code className="text-accent">{callbackUrl}</code>.
-                </li>
-                <li>
-                  Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>.
-                </li>
-              </ol>
-            </div>
-          )}
+          <button
+            onClick={handleGoogle}
+            disabled={busy}
+            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-border-strong bg-white text-[#1F1F1F] font-medium hover:bg-white/90 active:scale-[0.99] transition disabled:opacity-60"
+          >
+            <GoogleIcon />
+            {busy ? 'Signing in…' : 'Continue with Google'}
+          </button>
 
           {authError && (
             <p className="mt-4 text-xs text-danger text-center">
-              Google could not complete sign-in ({authError}). Check your client ID, secret, and authorized redirect URI (<code>{callbackUrl}</code>), then try again.
+              We couldn't complete Google sign-in right now. Please try again in a moment.
             </p>
           )}
 

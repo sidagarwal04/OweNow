@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { authUser, isGroupMember, json, writeStore } from './_shared.js';
+import { authUser, isGroupMember, json, resolveOrigin, writeStore } from './_shared.js';
 
 // POST /api/invite
 // Body: { email, groupId, groupName }
@@ -77,8 +77,7 @@ export const handler = async (event) => {
 
     const apiKey = process.env.RESEND_API_KEY;
     const from = process.env.RESEND_FROM_EMAIL || 'OweNow <onboarding@resend.dev>';
-    const appUrl =
-      process.env.NEXTAUTH_URL || process.env.VITE_APP_URL || 'https://owenow.app';
+    const appUrl = resolveOrigin(event);
 
     if (!apiKey) {
       return json(200, {

@@ -5,34 +5,12 @@ import {
   json,
   makeSessionCookie,
   redirect,
+  resolveOrigin,
   signJwt,
   upsertUserOnSignIn,
   verifyJwt,
   writeStore,
 } from './_shared.js';
-
-function resolveOrigin(event) {
-  const headers = event.headers || {};
-  const host = headers['x-forwarded-host'] || headers.host || headers.Host;
-  if (host) {
-    const proto =
-      headers['x-forwarded-proto'] ||
-      (host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
-    return `${proto}://${host}`;
-  }
-  if (event.rawUrl) {
-    try {
-      return new URL(event.rawUrl).origin;
-    } catch {
-      // ignore
-    }
-  }
-  return (
-    process.env.NEXTAUTH_URL ||
-    process.env.VITE_APP_URL ||
-    'http://localhost:5173'
-  ).replace(/\/+$/, '');
-}
 
 function getSubroute(event) {
   const p = event.path || '';
